@@ -1,6 +1,6 @@
 # homography_estimation
  
- The code does feature matching (ASIFT) between two images and then applies normalized linear homography estimation, robustified by standard RANSAC.
+ The code does feature matching (SIFT) between two images and then applies normalized linear homography estimation, robustified by standard RANSAC.
  
  Example: 
  
