@@ -213,8 +213,9 @@ int getIterationNumber(int point_number_,
 Mat ransacHMatrix(
 	const vector<Point2f>& normalized_input_src_points_,
 	const vector<Point2f>& normalized_input_destination_points_,
-	const Mat& T1_,
-	const Mat& T2_)
+	vector<size_t>& inliers_,
+	double confidence_,
+	double threshold_)
 {
 	srand(time(NULL));
 	// The so-far-the-best H
@@ -228,17 +229,18 @@ Mat ransacHMatrix(
 		index_pool[i] = i;
 
 	// The size of a minimal sample
-	constexpr size_t sample_size = 8;
+	constexpr size_t sample_size = 4;
 	// The minimal sample
 	size_t* mss = new size_t[sample_size];
 
-	size_t iteration_limit = 100000, // A strict iteration limit which mustn't be exceeded
+	size_t maximum_iterations = numeric_limits<int>::max(), // The maximum number of iterations set adaptively when a new best model is found
+		iteration_limit = 5000, // A strict iteration limit which mustn't be exceeded
 		iteration = 0; // The current iteration number
 
 	vector<Point2f> source_points(sample_size),
 		destination_points(sample_size);
 
-	while (iteration++ < iteration_limit)
+	while (iteration++ < MIN(iteration_limit, maximum_iterations))
 	{
 		vector<pair<Point2f, Point2f>> pointPairs;
 		for (auto sample_idx = 0; sample_idx < sample_size; ++sample_idx)
@@ -261,52 +263,59 @@ Mat ransacHMatrix(
 
 		// Estimate H matrix
 		Mat H_(3, 3, CV_32F);
-
 		H_ = calcHomography(pointPairs);
 
-		int errorCalcIdNum = 100;
-		vector<Point2f> errorCalc_source_points(errorCalcIdNum),
-			errorCalc_destination_points(errorCalcIdNum);
-
-		double error1 = 0.0;
-		double error2 = 0.0;
-		for (auto i = 0; i < errorCalcIdNum; ++i) {
-			const size_t randID = round((rand() / (double)RAND_MAX) * (normalized_input_src_points_.size() - 1));
-			errorCalc_source_points[i] = normalized_input_src_points_[randID];
-			errorCalc_destination_points[i] = normalized_input_destination_points_[randID];
+		vector<size_t> inliers;
+		for (auto i = 0; i < point_number; ++i) {
 			Mat pt1(3, 1, CV_32F);
-			pt1.at<float>(0, 0) = errorCalc_source_points[i].x; 
-			pt1.at<float>(1, 0) = errorCalc_source_points[i].y;
+			pt1.at<float>(0, 0) = normalized_input_src_points_[i].x;
+			pt1.at<float>(1, 0) = normalized_input_src_points_[i].y;
 			pt1.at<float>(2, 0) = 1;
 			Mat pt2(3, 1, CV_32F);
-			pt2.at<float>(0, 0) = errorCalc_destination_points[i].x;
-			pt2.at<float>(1, 0) = errorCalc_destination_points[i].y;
+			pt2.at<float>(0, 0) = normalized_input_destination_points_[i].x;
+			pt2.at<float>(1, 0) = normalized_input_destination_points_[i].y;
 			pt2.at<float>(2, 0) = 1;
-			error1 += pow(norm(H_ * pt1, pt2),2);
-			error2 += pow(norm(pt1, H_.inv() * pt2),2);
+			double error1 = pow(norm(H_ * pt1, pt2), 2);
+			double error2 = pow(norm(pt1, H_.inv() * pt2), 2);
+			double average_error = (error1 + error2) * 0.5;
+			if (average_error < threshold_)
+				inliers.push_back(i);
 		}
-		double average_error = (double)((error1 + error2) / point_number);
 		// Update if the new model is better than the previous so-far-the-best.
-		if (average_error < prev_error)
+		if (inliers_.size() < inliers.size())
 		{
-			prev_error = average_error;
+			cout << "Inlier size: " << inliers.size();  
+			// Update the set of inliers
+			inliers_.swap(inliers);
+			inliers.clear();
+			inliers.resize(0);
+			// Update the model parameters
 			best_H = H_;
-			cout << average_error << endl;
+			// Update the iteration number
+			maximum_iterations = getIterationNumber(point_number,
+				inliers_.size(),
+				sample_size,
+				confidence_);
+			cout << " Max iterations: " << maximum_iterations << endl;
 		}
-
 		// Put back the selected points to the pool
 		for (size_t i = 0; i < sample_size; ++i)
 			index_pool.push_back(mss[i]);
 	}
+
 	return best_H;
 }
 
 int main(int argc, char* argv[])
 {
-	srand(time(NULL));
+	if (argc != 5)
+	{
+		cout << "Usage: threshold input1 input2 output" << endl;
+		return -1;
+	}
 	// Load images
-	Mat image1 = imread("D:/source/repos/homography_estimation/data/horvat2.png");
-	Mat image2 = imread("D:/source/repos/homography_estimation/data/horvat1.png");
+	Mat image1 = imread(argv[2]);
+	Mat image2 = imread(argv[3]);
 
 	// Detect features
 	vector<Point2f> source_points, destination_points; // Point correspondences
@@ -326,23 +335,23 @@ int main(int argc, char* argv[])
 		T2); // Normalizing transformation in the second image
 
 	Mat best_H(3, 3, CV_32F);
-	best_H = ransacHMatrix(
-		normalized_source_points,  // Normalized points in the first image 
-		normalized_destination_points, // Normalized points in the second image
-		T1, // Normalizing transforcv::Mation in the first image
-		T2); // Normalizing transforcv::Mation in the second image
+	vector<size_t> inliers;
+	best_H = ransacHMatrix(normalized_source_points,   // Normalized points in the first image 
+		normalized_destination_points,   // Normalized points in the second image
+		inliers, // The inliers of the fundamental matrix
+		0.99, // The required confidence in the results 
+		stod(argv[1])); // The inlier-outlier threshold
 
 	best_H = T2.inv() * best_H * T1; // Denormalize the H matrix
 	best_H = best_H * (1.0 / best_H.at<float>(2, 2));
 	cout << best_H << endl;
 
 	Mat transformedImage = Mat::zeros(image2.size().height,image2.size().width, image2.type());
-	//transformImage(image2, transformedImage, Mat::eye(3, 3, CV_32F), true);
 	transformImage(image1, transformedImage, best_H, true);
-	namedWindow("Display frame", WINDOW_NORMAL);
-	imshow("Display frame", transformedImage);
+	imwrite(argv[4], transformedImage);
+	namedWindow("Transformed image", WINDOW_NORMAL);
+	imshow("Transformed image", transformedImage);
 	waitKey();
-	imwrite("D:/source/repos/homography_estimation/data/res.png", transformedImage);
 
 	return 0;
 }
