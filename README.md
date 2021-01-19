@@ -2,6 +2,8 @@
  
  The code does feature matching (SIFT) between two images and then applies normalized linear homography estimation, robustified by standard RANSAC.
  
+ Known and to be fixed bug: Denormalization of the H matrix should happen in the ransacHMatrix() function, after calculating the H_ matrix
+ 
  Example #1: 
  
  Input1:
